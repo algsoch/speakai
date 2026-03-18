@@ -147,9 +147,9 @@ type ModelOption = {
 const MODEL_INFO: ModelOption[] = [
   // Cloud option first (for testing)
   {
-    id: 'groq-llama3-8b-8192',
+    id: 'groq-llama-3.1-8b-instant',
     name: 'Groq (Cloud)',
-    description: 'Llama 3 8B · Extremely fast · Requires Internet',
+    description: 'Llama 3.1 8B · Extremely fast · Requires Internet',
     type: 'cloud',
     recommended: false, 
   },
@@ -936,7 +936,7 @@ export function PracticePage() {
             },
             body: JSON.stringify({
               messages: groqMessages,
-              model: 'llama3-8b-8192',
+              model: 'llama-3.1-8b-instant',
               temperature: 0.7,
               max_tokens: 250,
             })
