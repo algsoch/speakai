@@ -18,7 +18,7 @@ import {
 } from '@runanywhere/web'
 
 import { LlamaCPP, TextGeneration } from '@runanywhere/web-llamacpp'
-import { ONNX, STT, TTS, STTModelType } from '@runanywhere/web-onnx'
+import { ONNX, STT, TTS, type STTModelType, SherpaONNXBridge } from '@runanywhere/web-onnx'
 
 // ── Model Catalog ────────────────────────────────────────────────────────────
 
@@ -58,6 +58,7 @@ export interface SDKState {
   status: SDKStatus
   error: string | null
   downloadProgress: number  // 0-100
+  downloadLabel?: string // e.g. "Downloading LLM..."
   activeModelId: string | null
   accelerationMode: string | null // 'webgpu' | 'cpu'
   sttReady: boolean
@@ -69,6 +70,7 @@ let _state: SDKState = {
   status: 'uninitialized',
   error: null,
   downloadProgress: 0,
+  downloadLabel: undefined,
   activeModelId: null,
   accelerationMode: null,
   sttReady: false,
@@ -179,7 +181,9 @@ export async function loadLLMModel(modelId: string = LLM_MODELS[0].id): Promise<
 
   // Download if needed
   if (model.status !== 'downloaded' && model.status !== 'loaded') {
-    setState({ status: 'downloading', downloadProgress: 0 })
+    const meta = LLM_MODELS.find(m => m.id === modelId)
+    const label = meta ? `Downloading ${meta.name}...` : 'Downloading LLM Model...'
+    setState({ status: 'downloading', downloadProgress: 0, downloadLabel: label })
 
     // Polling fallback: some SDK versions don't fire EventBus progress events reliably.
     // Poll ModelManager.getModels() every 300ms to update progress from model.downloadProgress field.
@@ -189,7 +193,16 @@ export async function loadLLMModel(modelId: string = LLM_MODELS[0].id): Promise<
       const rawPct = (current as any).downloadProgress as number | undefined
       if (rawPct !== undefined && rawPct > 0) {
         const pct = rawPct > 1 ? Math.round(rawPct) : Math.round(rawPct * 100)
-        setState({ status: 'downloading', downloadProgress: Math.min(pct, 99) })
+        // Estimate size if possible
+        const totalMB = meta?.memoryRequirement ? Math.round(meta.memoryRequirement / 1024 / 1024) : 0
+        const currentMB = totalMB ? Math.round(totalMB * (pct / 100)) : 0
+        const sizeInfo = totalMB ? `(${currentMB} / ${totalMB} MB)` : ''
+        
+        setState({ 
+          status: 'downloading', 
+          downloadProgress: Math.min(pct, 99), 
+          downloadLabel: `Downloading ${meta?.name || 'LLM'} ${sizeInfo}...` 
+        })
       }
     }, 300)
 
@@ -301,19 +314,224 @@ export async function resetContext(): Promise<void> {
 // ── STT (Speech-to-Text) ──────────────────────────────────────────────────────
 // STT uses browser Web Speech API as the primary path (instant, no download),
 // with RunAnywhere ONNX Whisper as the fallback when available.
-// The Web Speech API path is used by default for the best UX.
 
-export type STTMode = 'webspeech' | 'runanywhere'
+export const STT_MODELS = [
+  {
+    id: 'sherpa-onnx-whisper-tiny.en',
+    name: 'Whisper Tiny English (ONNX)',
+    sizeMB: 40,
+    config: {
+      type: 'whisper' as const,
+      urls: {
+        encoder: 'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-encoder.int8.onnx',
+        decoder: 'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-decoder.int8.onnx',
+        tokens:  'https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-tokens.txt',
+      }
+    }
+  }
+]
 
-let _sttMode: STTMode = 'webspeech'
+export const TTS_MODELS = [
+  {
+    id: 'vits-mms-eng',
+    name: 'MMS English (VITS)',
+    sizeMB: 65,
+    gender: 'female',
+    config: {
+      urls: {
+        model: 'https://huggingface.co/csukuangfj/vits-mms-eng/resolve/main/model.onnx',
+        tokens: 'https://huggingface.co/csukuangfj/vits-mms-eng/resolve/main/tokens.txt',
+      }
+    }
+  },
+]
 
-export function getSTTMode(): STTMode { return _sttMode }
+// Helper to ensure SherpaONNXBridge is ready
+async function ensureSherpaLoaded() {
+  if (SherpaONNXBridge.shared.isLoaded) return
+
+  // In development, the files are at /wasm/ because they are in public/wasm
+  const wasmBase = import.meta.env.DEV
+    ? new URL('/wasm/', window.location.origin).href
+    : new URL('../wasm/', import.meta.url).href
+
+  console.log('[RunAnywhere] Loading Sherpa-ONNX WASM from:', wasmBase)
+  
+  // Note: SherpaONNXBridge.shared.ensureLoaded(url) loads the GLUE file.
+  // The glue file then loads the helper JS files and eventual WASM.
+  // We point it to 'sherpa-onnx-glue.js' at the correct base.
+  await SherpaONNXBridge.shared.ensureLoaded(`${wasmBase}sherpa-onnx-glue.js`)
+}
+
+// Helper to download files to Sherpa virtual FS
+async function ensureSherpaFile(url: string, path: string, onProgress?: (loaded: number, total: number) => void) {
+  await ensureSherpaLoaded()
+  
+  // Using downloadAndWrite from bridge with progress callback
+  return SherpaONNXBridge.shared.downloadAndWrite(url, path, (loaded, total) => {
+    if (onProgress) onProgress(loaded, total)
+  })
+}
+
+export async function loadSTTModel(modelId = STT_MODELS[0].id): Promise<void> {
+  console.log('[RunAnywhere] Loading STT model:', modelId)
+  await ensureSherpaLoaded()
+  
+  setState({ status: 'downloading', downloadProgress: 0, downloadLabel: 'Downloading STT Model assets...' })
+  
+  const model = STT_MODELS.find(m => m.id === modelId)
+  if (!model) throw new Error(`STT model ${modelId} not found`)
+
+  try {
+    const basePath = `/models/stt/${modelId}`
+    SherpaONNXBridge.shared.ensureDir(basePath)
+
+    const files = {
+      encoder: `${basePath}/encoder.onnx`,
+      decoder: `${basePath}/decoder.onnx`,
+      tokens:  `${basePath}/tokens.txt`,
+    }
+
+    // Download files in parallel
+    const progress = {
+      encoder: { loaded: 0, total: 1 }, // Init with 1 to avoid div/0
+      decoder: { loaded: 0, total: 1 },
+      tokens:  { loaded: 0, total: 1 }
+    }
+    
+    const updateProgress = () => {
+      const loaded = progress.encoder.loaded + progress.decoder.loaded + progress.tokens.loaded
+      const total = progress.encoder.total + progress.decoder.total + progress.tokens.total
+      if (total > 3) { // Ensure we have real values
+        const pct = Math.round((loaded / total) * 100)
+        const loadedMB = (loaded / 1048576).toFixed(1)
+        const totalMB = (total / 1048576).toFixed(1)
+        setState({ 
+          status: 'downloading', 
+          downloadProgress: pct,
+          downloadLabel: `Downloading STT Assets (${loadedMB} / ${totalMB} MB)...`
+        })
+      }
+    }
+
+    console.log('[RunAnywhere] Downloading STT assets...')
+    await Promise.all([
+      ensureSherpaFile(model.config.urls.encoder, files.encoder, (l, t) => { progress.encoder = { loaded: l, total: t }; updateProgress() }),
+      ensureSherpaFile(model.config.urls.decoder, files.decoder, (l, t) => { progress.decoder = { loaded: l, total: t }; updateProgress() }),
+      ensureSherpaFile(model.config.urls.tokens, files.tokens, (l, t) => { progress.tokens = { loaded: l, total: t }; updateProgress() }),
+    ])
+
+    setState({ status: 'loading', downloadProgress: 100 })
+
+    console.log('[RunAnywhere] Initializing STT engine...')
+    await STT.loadModel({
+      modelId,
+      type: model.config.type as any,
+      modelFiles: {
+        tokens: files.tokens,
+        encoder: files.encoder,
+        decoder: files.decoder,
+      }
+    })
+
+    setState({ status: 'active', sttReady: true })
+    console.log('[RunAnywhere] STT model loaded')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    setState({ status: 'error', error: msg })
+    throw err
+  }
+}
+
+export async function loadTTSModel(modelId: string): Promise<void> {
+  console.log('[RunAnywhere] Loading TTS model:', modelId)
+  await ensureSherpaLoaded()
+  
+  setState({ status: 'downloading', downloadProgress: 0, downloadLabel: 'Downloading TTS Model assets...' })
+
+  const model = TTS_MODELS.find(m => m.id === modelId)
+  if (!model) throw new Error(`TTS model ${modelId} not found`)
+
+  try {
+    const basePath = `/models/tts/${modelId}`
+    SherpaONNXBridge.shared.ensureDir(basePath)
+
+    // Basic VITS/MMS files. MMS doesn't use lexicon.
+    // @ts-ignore
+    const lexiconUrl = model.config.urls.lexicon as string | undefined
+
+    const files = {
+      model: `${basePath}/model.onnx`,
+      tokens: `${basePath}/tokens.txt`,
+      lexicon: lexiconUrl ? `${basePath}/lexicon.txt` : undefined,
+    }
+
+    // Progress tracking
+    const progress = {
+      model: { loaded: 0, total: 1 }, 
+      tokens: { loaded: 0, total: 1 },
+      lexicon: { loaded: 0, total: lexiconUrl ? 1 : 0 },
+    }
+    
+    const updateProgress = () => {
+      const loaded = progress.model.loaded + progress.tokens.loaded + (progress.lexicon.loaded || 0)
+      const total = progress.model.total + progress.tokens.total + (progress.lexicon.total || 0)
+      if (total > 2) { 
+        const pct = Math.round((loaded / total) * 100)
+        const loadedMB = (loaded / 1048576).toFixed(1)
+        const totalMB = (total / 1048576).toFixed(1)
+        setState({ 
+          status: 'downloading', 
+          downloadProgress: pct,
+          downloadLabel: `Downloading TTS Assets (${loadedMB} / ${totalMB} MB)...`
+        })
+      }
+    }
+
+    console.log('[RunAnywhere] Downloading TTS assets...')
+    const downloadPromises = [
+      ensureSherpaFile(model.config.urls.model, files.model, (l, t) => { progress.model = { loaded: l, total: t }; updateProgress() }),
+      ensureSherpaFile(model.config.urls.tokens, files.tokens, (l, t) => { progress.tokens = { loaded: l, total: t }; updateProgress() }),
+    ]
+    if (lexiconUrl && files.lexicon) {
+      downloadPromises.push(ensureSherpaFile(lexiconUrl, files.lexicon, (l, t) => { progress.lexicon = { loaded: l, total: t }; updateProgress() }))
+    }
+
+    await Promise.all(downloadPromises)
+    
+    setState({ status: 'loading', downloadProgress: 100 })
+
+
+    console.log('[RunAnywhere] Initializing TTS engine...')
+    await TTS.loadVoice({
+      voiceId: modelId,
+      modelPath: files.model,
+      tokensPath: files.tokens,
+      ...(files.lexicon ? { lexicon: files.lexicon } : {}),
+      numThreads: 2
+    })
+
+    setState({ status: 'active', ttsReady: true })
+    console.log('[RunAnywhere] TTS model loaded')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Keep app usable when local TTS model creation fails.
+    // Callers can fallback to browser speech without blocking LLM/STT.
+    setState({
+      ttsReady: false,
+      error: `TTS init failed: ${msg}`,
+      status: _state.activeModelId ? 'active' : 'ready',
+    })
+    throw err
+  }
+}
 
 /**
  * Transcribe using RunAnywhere ONNX Whisper (local, no network for inference).
  * Requires STT model to be loaded first.
  */
 export async function transcribeWithRunAnywhere(audioSamples: Float32Array): Promise<string> {
+  // @ts-ignore
   const result = await STT.transcribe(audioSamples)
   return result.text
 }
@@ -359,6 +577,13 @@ export function speakBrowser(
   if (opts.onEnd) utt.onend = opts.onEnd
   window.speechSynthesis.speak(utt)
   return utt
+}
+
+
+export async function speakRunAnywhere(text: string, voiceId: string = 'vits-mms-eng'): Promise<void> {
+  // Use RunAnywhere Piper TTS
+  // @ts-ignore
+  await TTS.speak(text, { sampleRate: 22050 })
 }
 
 // ── AudioCapture (for RunAnywhere STT path) ───────────────────────────────────

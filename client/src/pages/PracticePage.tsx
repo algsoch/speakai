@@ -23,7 +23,9 @@ import { useToast } from '@/hooks/use-toast'
 import {
   initSDK, loadLLMModel, generateResponse, resetContext,
   speakBrowser, subscribeSDK,
-  LLM_MODELS,
+  loadSTTModel, loadTTSModel, speakRunAnywhere,
+  transcribeWithRunAnywhere, MicrophoneCapture,
+  LLM_MODELS, STT_MODELS, TTS_MODELS,
   type SDKState,
 } from '@/lib/runanywhere'
 
@@ -39,10 +41,82 @@ interface FeedbackData {
   suggestions: string[]
 }
 
+function formatSentenceForSuggestion(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ')
+  if (!trimmed) return ''
+  const withCapital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+  return /[.!?]$/.test(withCapital) ? withCapital : `${withCapital}.`
+}
+
+function formatNaturalAlternative(text: string, tone: Mode = 'friendly'): string {
+  const improved = formatSentenceForSuggestion(text)
+  if (!improved) return ''
+
+  const lower = improved.toLowerCase()
+
+  // Hand-tuned rewrites for common learner phrases.
+  if (lower === 'you have a good voice.') return 'You sound great.'
+  if (lower === 'very nice to talk to you.') return 'It was really nice talking with you.'
+
+  // Pattern rewrite: "How to ..." -> "How can I ...?"
+  const howTo = improved.match(/^How to (.+)\.$/i)
+  if (howTo?.[1]) {
+    let phrase = howTo[1].trim()
+    phrase = phrase.replace(/^start new$/i, 'start fresh')
+    return `How can I ${phrase}?`
+  }
+
+  // Pattern rewrite: "That could be ..." -> "That sounds ..."
+  const couldBe = improved.match(/^That could be (.+)\.$/i)
+  if (couldBe?.[1]) {
+    let phrase = couldBe[1]
+      .replace(/\bvery\b/gi, 'really')
+      .replace(/\bimaginative\b/gi, 'creative')
+    return `That sounds ${phrase}.`
+  }
+
+  // Generic light paraphrase by soft synonym swaps.
+  let paraphrased = improved
+    .replace(/\bvery\b/gi, 'really')
+    .replace(/\bgood\b/gi, 'great')
+    .replace(/\bnice\b/gi, 'lovely')
+    .replace(/\bimaginative\b/gi, 'creative')
+
+  // Guarantee the "natural alternative" is not an exact copy.
+  if (paraphrased === improved) {
+    // Force a distinct structure rather than echoing the same sentence.
+    if (/\bcan\b/i.test(improved)) {
+      paraphrased = improved.replace(/\bcan\b/i, 'could')
+    } else if (/\bshould\b/i.test(improved)) {
+      paraphrased = improved.replace(/\bshould\b/i, 'could')
+    } else {
+      paraphrased = `A more natural way to say this is: ${improved}`
+    }
+  }
+
+  // Tone polish by persona.
+  if (tone === 'teacher') {
+    paraphrased = paraphrased.replace(/^That sounds natural:\s*/i, '')
+    if (!/[.!?]$/.test(paraphrased)) paraphrased += '.'
+  } else if (tone === 'interviewer') {
+    paraphrased = paraphrased.replace(/^That sounds natural:\s*/i, '')
+    paraphrased = paraphrased.replace(/\blovely\b/gi, 'clear')
+    if (!/[.!?]$/.test(paraphrased)) paraphrased += '.'
+  } else if (tone === 'casual') {
+    paraphrased = paraphrased.replace(/^That sounds natural:\s*/i, '')
+    paraphrased = paraphrased.replace(/\breally\b/gi, 'pretty')
+    if (!/[.!?]$/.test(paraphrased)) paraphrased += '.'
+  }
+
+  return paraphrased
+}
+
 type PartnerConfig = {
   userGender: string
   partnerType: string
 }
+
+type SpeechProvider = 'browser' | 'local'
 
 interface LocalMessage {
   id: number
@@ -151,16 +225,26 @@ type ModelOption = {
   description: string
   recommended?: boolean
   type: 'local' | 'cloud' | 'scripted'
+  memory?: string
 }
 
 const MODEL_INFO: ModelOption[] = [
-  // Cloud option first (for testing)
+  // Local models first (default selection uses index 0).
+  ...LLM_MODELS.map(m => ({
+    id: m.id,
+    name: m.name,
+    description: m.id.includes('lfm') ? 'LiquidAI LFM2 · Runs on device' : 'SmolLM2 360M · Low memory',
+    type: 'local' as const,
+    sizeMB: m.memoryRequirement ? Math.round(m.memoryRequirement / 1024 / 1024) : 0,
+    memory: m.memoryRequirement ? `${Math.round(m.memoryRequirement / 1024 / 1024)} MB` : undefined,
+    recommended: m.id === LLM_MODELS[0].id
+  })),
   {
     id: 'groq-llama-3.1-8b-instant',
     name: 'Groq (Cloud)',
-    description: 'Llama 3.1 8B · Extremely fast · Requires Internet',
+    description: 'Llama 3.1 8B · Very fast · Sends chat to Groq cloud',
     type: 'cloud',
-    recommended: false, 
+    recommended: false,
   },
   {
     id: 'scripted-fallback',
@@ -168,19 +252,6 @@ const MODEL_INFO: ModelOption[] = [
     description: 'Instant · Works offline · No AI model required',
     type: 'scripted',
     recommended: false,
-  },
-  {
-    ...LLM_MODELS[0],
-    sizeMB: 300,
-    description: 'LiquidAI LFM2 · Runs on device · High quality',
-    recommended: true,
-    type: 'local',
-  },
-  {
-    ...LLM_MODELS[1],
-    sizeMB: 250,
-    description: 'SmolLM2 360M · Runs on device · Low memory',
-    type: 'local',
   },
 ]
 
@@ -239,10 +310,10 @@ function MessageBubble({ message, isNew }: { message: LocalMessage; isNew?: bool
         )}
         
         {/* Attribution / Source indicator */}
-        {!isUser && message.source && (
+        {message.source && (
           <div className="flex items-center gap-1.5 px-1 animate-in fade-in duration-500">
-             <div className="w-1 h-1 rounded-full bg-primary/40"></div>
-             <span className="text-[10px] text-muted-foreground/60 font-medium uppercase tracking-wider">{message.source}</span>
+             <div className={`w-1 h-1 rounded-full ${isUser ? 'bg-blue-400/70' : 'bg-primary/40'}`}></div>
+             <span className="text-[10px] text-muted-foreground/70 font-medium uppercase tracking-wider">{message.source}</span>
           </div>
         )}
       </div>
@@ -314,15 +385,24 @@ const SESSION_KEY = 'speakai_sessions'
 
 function loadSessions(): SavedSession[] {
   try {
-    const raw = window.sessionStorage.getItem(SESSION_KEY)
-    return raw ? JSON.parse(raw) : []
+    // Primary persistent storage across browser restarts.
+    const rawLocal = window.localStorage.getItem(SESSION_KEY)
+    if (rawLocal) return JSON.parse(rawLocal)
+
+    // Backward compatibility: migrate old sessionStorage data once.
+    const rawSession = window.sessionStorage.getItem(SESSION_KEY)
+    if (!rawSession) return []
+
+    const parsed = JSON.parse(rawSession)
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(parsed))
+    return parsed
   } catch { return [] }
 }
 
 function saveSessions(sessions: SavedSession[]) {
   try {
     // Keep last 10 sessions
-    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(sessions.slice(-10)))
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(sessions.slice(-10)))
   } catch { /* ignore quota */ }
 }
 
@@ -451,10 +531,16 @@ function ModelDownloadPanel({
   onSkip,
 }: {
   sdkState: SDKState
-  onSelectModel: (modelId: string) => void
+  onSelectModel: (modelId: string, stt: SpeechProvider, tts: SpeechProvider, voiceId?: string) => void
   onSkip: () => void
 }) {
   const [selected, setSelected] = useState(MODEL_INFO[0].id)
+  
+  // Speech configuration state
+  const [sttProvider, setSttProvider] = useState<SpeechProvider>('browser')
+  const [ttsProvider, setTtsProvider] = useState<SpeechProvider>('browser')
+  const [selectedVoice, setSelectedVoice] = useState(TTS_MODELS[0].id)
+
   const isDownloading = sdkState.status === 'downloading' || sdkState.status === 'loading'
   const isActive      = sdkState.status === 'active'
   const isInitializing = sdkState.status === 'initializing' || sdkState.status === 'uninitialized'
@@ -463,68 +549,211 @@ function ModelDownloadPanel({
   const isLocalModel  = selectedModel?.type === 'local'
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 bg-background">
-      <div className="w-full max-w-lg">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 bg-background overflow-y-auto">
+      <div className="w-full max-w-lg space-y-8">
 
         {/* Icon + heading */}
-        <div className="flex flex-col items-center text-center mb-8">
+        <div className="flex flex-col items-center text-center">
           <div className="w-16 h-16 rounded-2xl bg-orange-50 dark:bg-orange-950/30 border border-orange-100 dark:border-orange-900 flex items-center justify-center mb-4">
             <Cpu className="w-8 h-8 text-primary" />
           </div>
-          <h2 className="text-xl font-bold text-foreground mb-2">Choose Your AI Model</h2>
+          <h2 className="text-xl font-bold text-foreground mb-2">Configure Your AI Experience</h2>
           <p className="text-sm text-muted-foreground max-w-sm">
-            Select a model. Local models run 100% on your device. Cloud models require an API key.
+            Customize which AI models and speech engines to run.
           </p>
         </div>
 
-        {/* Model cards */}
-        {!isDownloading && !isActive && (
-          <div className="space-y-3 mb-6">
-            {MODEL_INFO.map(m => (
-              <button
-                key={m.id}
-                data-testid={`button-model-${m.id}`}
-                onClick={() => setSelected(m.id)}
-                className={`w-full flex items-start gap-4 p-4 rounded-xl border text-left transition-all ${
-                  selected === m.id
-                    ? 'border-primary bg-orange-50 dark:bg-orange-950/30 shadow-sm'
-                    : 'border-border bg-card hover:border-primary/40'
-                }`}
-              >
-                <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
-                  selected === m.id ? 'bg-primary/15' : 'bg-secondary'
-                }`}>
-                  {m.type === 'cloud' && <HardDrive className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
-                  {m.type === 'local' && <Download className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
-                  {m.type === 'scripted' && <MessageSquare className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-sm text-foreground">{m.name}</span>
-                    {m.recommended && (
-                      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-primary/15 text-primary font-medium">
-                        <Sparkles className="w-2.5 h-2.5" /> Recommended
-                      </span>
-                    )}
+        {/* 1. Language Model Section */}
+        {!isDownloading && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
+              <span className="w-6 h-6 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs">1</span>
+              Language Model (Brain)
+            </h3>
+            <div className="space-y-3">
+              {MODEL_INFO.map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => setSelected(m.id)}
+                  className={`w-full flex items-start gap-4 p-4 rounded-xl border text-left transition-all ${
+                    selected === m.id
+                      ? 'border-primary bg-orange-50 dark:bg-orange-950/30 shadow-sm'
+                      : 'border-border bg-card hover:border-primary/40'
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                    selected === m.id ? 'bg-primary/15' : 'bg-secondary'
+                  }`}>
+                    {m.type === 'cloud' && <HardDrive className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
+                    {m.type === 'local' && <Download className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
+                    {m.type === 'scripted' && <MessageSquare className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">{m.description}</p>
-                  <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                    {m.type === 'local' 
-                      ? <>~{m.sizeMB} MB · downloads once</>
-                      : m.type === 'cloud' 
-                        ? <>Requires active internet</>
-                        : <>No download required</>
-                    }
-                  </p>
-                </div>
-                <div className={`w-5 h-5 rounded-full border-2 shrink-0 mt-1 flex items-center justify-center transition-colors ${
-                  selected === m.id ? 'border-primary bg-primary' : 'border-border'
-                }`}>
-                  {selected === m.id && <div className="w-2 h-2 rounded-full bg-white" />}
-                </div>
-              </button>
-            ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-sm text-foreground">{m.name}</span>
+                      {m.type === 'local' && (
+                        <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300 font-medium">
+                          Local/Private
+                        </span>
+                      )}
+                      {m.type === 'cloud' && (
+                        <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300 font-medium">
+                          Cloud/Sends Data
+                        </span>
+                      )}
+                      {m.type === 'scripted' && (
+                        <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300 font-medium">
+                          Offline/Scripted
+                        </span>
+                      )}
+                      {m.recommended && (
+                        <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-primary/15 text-primary font-medium">
+                          <Sparkles className="w-2.5 h-2.5" /> Recommended
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{m.description}</p>
+                    {m.type === 'cloud' && (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" />
+                        Warning: Chat content is sent to Groq.
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                      {m.type === 'local' 
+                        ? <>~{m.sizeMB} MB · downloads once</>
+                        : m.type === 'cloud' 
+                          ? <>Requires active internet</>
+                          : <>No download required</>
+                      }
+                    </p>
+                  </div>
+                  <div className={`w-5 h-5 rounded-full border-2 shrink-0 mt-1 flex items-center justify-center transition-colors ${
+                    selected === m.id ? 'border-primary bg-primary' : 'border-border'
+                  }`}>
+                    {selected === m.id && <div className="w-2 h-2 rounded-full bg-white" />}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
+        )}
+
+        {/* 2. Speech Settings Section */}
+        {!isDownloading && (
+           <div className="space-y-4">
+             <h3 className="text-sm font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
+               <span className="w-6 h-6 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center text-xs">2</span>
+               Speech Engine
+             </h3>
+             
+             {/* STT Selection */}
+             <div className="p-4 rounded-xl border border-border bg-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                     <Mic className="w-4 h-4 text-muted-foreground" />
+                     <span className="text-sm font-medium">Microphone (Speech-to-Text)</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                   <button
+                     onClick={() => setSttProvider('browser')}
+                     className={`p-3 rounded-lg border text-xs text-left transition-all ${
+                       sttProvider === 'browser' 
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-500' 
+                        : 'border-border hover:bg-accent'
+                     }`}
+                   >
+                     <div className="font-semibold mb-1">Chrome Browser (Default)</div>
+                     <div className="text-muted-foreground">Uses browser API · 0 MB · Fast</div>
+                   </button>
+                   <button
+                     onClick={() => setSttProvider('local')}
+                     className={`p-3 rounded-lg border text-xs text-left transition-all ${
+                       sttProvider === 'local' 
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-500' 
+                        : 'border-border hover:bg-accent'
+                     }`}
+                   >
+                     <div className="font-semibold mb-1">Whisper Tiny (ONNX)</div>
+                     <div className="text-muted-foreground flex items-center gap-1">
+                       <Download className="w-3 h-3" />
+                       ~105 MB · Private · Offline
+                     </div>
+                   </button>
+                </div>
+             </div>
+
+             {/* TTS Selection */}
+             <div className="p-4 rounded-xl border border-border bg-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                     <Volume2 className="w-4 h-4 text-muted-foreground" />
+                     <span className="text-sm font-medium">Voice (Text-to-Speech)</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                   <button
+                     onClick={() => setTtsProvider('browser')}
+                     className={`p-3 rounded-lg border text-xs text-left transition-all ${
+                       ttsProvider === 'browser' 
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-500' 
+                        : 'border-border hover:bg-accent'
+                     }`}
+                   >
+                     <div className="font-semibold mb-1">Browser Native (Default)</div>
+                     <div className="text-muted-foreground">System voices · 0 MB · Instant</div>
+                   </button>
+                   
+                   {/* Local Voices */}
+                   {TTS_MODELS.map(voice => (
+                      <button
+                        key={voice.id}
+                        onClick={() => { setTtsProvider('local'); setSelectedVoice(voice.id) }}
+                        className={`p-3 rounded-lg border text-xs text-left transition-all flex justify-between items-center ${
+                          ttsProvider === 'local' && selectedVoice === voice.id
+                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-500' 
+                            : 'border-border hover:bg-accent'
+                        }`}
+                      >
+                         <div>
+                            <div className="font-semibold mb-1">{voice.name}</div>
+                            <div className="text-muted-foreground flex items-center gap-1">
+                                <Download className="w-3 h-3" />
+                                ~{voice.sizeMB} MB · High Quality · Offline
+                            </div>
+                         </div>
+                         {ttsProvider === 'local' && selectedVoice === voice.id && (
+                           <CheckCircle2 className="w-4 h-4 text-blue-500" />
+                         )}
+                      </button>
+                   ))}
+                </div>
+             </div>
+           </div>
+        )}
+
+        {/* Error State */}
+        {sdkState.status === 'error' && (
+           <div className="mb-6 rounded-2xl border-2 border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950/40 p-5">
+              <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0">
+                      <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
+                  </div>
+                  <div>
+                      <h4 className="font-bold text-red-800 dark:text-red-200 text-sm">Download Failed</h4>
+                      <p className="text-xs text-red-600 dark:text-red-300 mt-1">{sdkState.error || 'Unknown error occurred while downloading models.'}</p>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        onClick={() => window.location.reload()}
+                        className="mt-3 h-8 text-xs border-red-200 hover:bg-red-100 text-red-700"
+                      >
+                        Retry
+                      </Button>
+                  </div>
+              </div>
+           </div>
         )}
 
         {/* Downloading / loading progress */}
@@ -541,9 +770,9 @@ function ModelDownloadPanel({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-foreground">
-                  {sdkState.status === 'downloading' ? 'Downloading AI model to your device...' : 'Loading model into WASM engine...'}
+                  {sdkState.status === 'downloading' ? (sdkState.downloadLabel || 'Downloading Model assets...') : 'Loading into engine...'}
                 </p>
-                <p className="text-xs text-muted-foreground mt-0.5">Keep this tab open · runs 100% locally</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Keep tab open · runs locally</p>
               </div>
               {sdkState.status === 'downloading' && (
                 <span className="text-2xl font-black text-primary tabular-nums shrink-0">
@@ -554,19 +783,7 @@ function ModelDownloadPanel({
 
             {/* Progress bar */}
             <div className="px-5 pb-2">
-              {sdkState.status === 'downloading' ? (
-                <>
-                  <Progress value={sdkState.downloadProgress} className="h-3 rounded-full" />
-                  <div className="flex justify-between text-[10px] text-muted-foreground mt-1.5">
-                    <span>0 MB</span>
-                    <span>{MODEL_INFO.find(m => m.id === (sdkState.activeModelId ?? selected))?.sizeMB ?? '~300'} MB</span>
-                  </div>
-                </>
-              ) : (
-                <div className="h-3 rounded-full bg-primary/20 overflow-hidden">
-                  <div className="h-full bg-primary rounded-full animate-[progress-indeterminate_1.5s_ease-in-out_infinite]" style={{ width: '60%' }} />
-                </div>
-              )}
+              <Progress value={sdkState.downloadProgress} className="h-3 rounded-full" />
             </div>
 
             {/* Step indicators */}
@@ -590,7 +807,7 @@ function ModelDownloadPanel({
                 </div>
                 <span className={`text-[11px] font-medium ${
                   sdkState.status === 'loading' ? 'text-primary' : 'text-muted-foreground'
-                }`}>Load into WASM</span>
+                }`}>Initialize</span>
               </div>
               <div className="flex-1 h-px bg-border mx-2" />
               <div className="flex items-center gap-1.5">
@@ -601,53 +818,26 @@ function ModelDownloadPanel({
           </div>
         )}
 
-        {/* Active / ready */}
-        {isActive && (
-          <div className="mb-6 p-5 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 flex items-center gap-3">
-            <CheckCircle2 className="w-6 h-6 text-green-500 shrink-0" />
-            <div>
-              <p className="text-sm font-semibold text-foreground">Model ready!</p>
-              <p className="text-xs text-muted-foreground">
-                {MODEL_INFO.find(m => m.id === sdkState.activeModelId)?.name} loaded · {sdkState.accelerationMode === 'webgpu' ? 'WebGPU' : 'WASM CPU'}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* SDK init state */}
-        {isInitializing && (
-          <div className="mb-6 p-4 rounded-xl border border-border bg-secondary/50 flex items-center gap-3">
-            <Loader2 className="w-5 h-5 text-primary animate-spin shrink-0" />
-            <p className="text-sm text-muted-foreground">Initializing RunAnywhere SDK...</p>
-          </div>
-        )}
-
-        {/* Error */}
-        {sdkState.status === 'error' && (
-          <div className="mb-6 p-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-foreground">SDK initialization failed</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{sdkState.error}</p>
-            </div>
-          </div>
-        )}
-
         {/* Action buttons */}
-        <div className="flex flex-col gap-3">
-          {!isDownloading && !isActive && (
+        <div className="flex flex-col gap-3 pb-8">
+          {!isDownloading && (
             <Button
-              onClick={() => onSelectModel(selected)}
+              onClick={() => onSelectModel(selected, sttProvider, ttsProvider, ttsProvider === 'local' ? selectedVoice : undefined)}
               disabled={isInitializing && isLocalModel}
               data-testid="button-download-model"
               className="w-full rounded-full py-5 text-sm font-semibold bg-primary hover:bg-primary/90 text-white shadow-md shadow-orange-500/20"
             >
-              {!isLocalModel ? <Zap className="w-4 h-4 mr-2" /> : <Download className="w-4 h-4 mr-2" />}
-              {selectedModel?.type === 'cloud' 
-                ? 'Use Cloud Model' 
-                : selectedModel?.type === 'scripted' 
-                  ? 'Use Scripted Responses'
-                  : 'Download & Load Model'
+              {!isLocalModel && sttProvider === 'browser' && ttsProvider === 'browser'
+                ? <Zap className="w-4 h-4 mr-2" /> 
+                : <Download className="w-4 h-4 mr-2" />
+              }
+              {  
+                // If any local component is selected (LLM, STT, or TTS), show "Download & Start" or "Load & Start"
+                // depending on whether it's already active or confusing otherwise.
+                // Simplified logic: If local models involved, emphasize loading/downloading.
+                (selectedModel?.type === 'local' || sttProvider === 'local' || ttsProvider === 'local')
+                  ? (isActive ? 'Switch To Selected Model' : 'Load Selected AI Models')
+                  : (isActive ? 'Switch To Cloud/Scripted' : 'Start Practice Session')
               }
               <ChevronRight className="w-4 h-4 ml-1" />
             </Button>
@@ -660,24 +850,11 @@ function ModelDownloadPanel({
               className="w-full rounded-full py-5 text-sm font-semibold bg-primary hover:bg-primary/90 text-white shadow-md shadow-orange-500/20"
             >
               <Zap className="w-4 h-4 mr-2" />
-              Start Practicing Now
+              Start Practicing Now!
               <ChevronRight className="w-4 h-4 ml-1" />
             </Button>
           )}
-
-          <Button
-            variant="ghost"
-            onClick={onSkip}
-            data-testid="button-skip-model"
-            className="w-full rounded-full text-sm text-muted-foreground hover:text-foreground"
-          >
-            {isActive ? 'Continue to practice' : isDownloading ? 'Cancel & skip — use browser speech' : 'Skip — use browser speech only'}
-          </Button>
         </div>
-
-        <p className="text-center text-xs text-muted-foreground mt-4">
-          Model stored in your browser · never sent to any server
-        </p>
       </div>
     </div>
   )
@@ -685,46 +862,38 @@ function ModelDownloadPanel({
 
 // ── SDK Status Strip ──────────────────────────────────────────────────────────
 
-function SDKStrip({ sdkState, activeModel, onOpenPanel }: { sdkState: SDKState; activeModel: ModelOption | null; onOpenPanel: () => void }) {
-  // If we are in "Cloud" or "Scripted" mode, show a different indicator
-  if (activeModel?.type === 'cloud') {
-    return (
-      <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 dark:bg-blue-950/30 border-b border-blue-100 dark:border-blue-900 text-xs text-blue-700 dark:text-blue-400">
-        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
-        <HardDrive className="w-3 h-3 shrink-0" />
-        <span>Cloud Model Active · {activeModel.name}</span>
-      </div>
-    )
-  }
-  if (activeModel?.type === 'scripted') {
-    return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-secondary border-b border-border text-xs text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <MessageSquare className="w-3 h-3" /> Scripted Mode (Offline)
-        </span>
-        <button onClick={onOpenPanel} className="text-xs font-semibold text-primary hover:underline">
-          Change Model →
-        </button>
-      </div>
-    )
-  }
+function SDKStrip({ 
+  sdkState, 
+  activeModel, 
+  activeStt, 
+  activeTts, 
+  activeVoice,
+  onOpenPanel 
+}: { 
+  sdkState: SDKState
+  activeModel: ModelOption | null
+  activeStt: SpeechProvider
+  activeTts: SpeechProvider
+  activeVoice?: string
+  onOpenPanel: () => void 
+}) {
+  const getVoiceName = (id?: string) => TTS_MODELS.find(v => v.id === id)?.name || id
+  const getSttName = (local: boolean) => local ? "Whisper Tiny (ONNX)" : "Browser Mic"
+  
+  // Info string builder
+  const speechInfo = [
+    activeStt === 'local' ? `🎤 ${getSttName(true)}` : null,
+    activeTts === 'local' ? `🔊 ${getVoiceName(activeVoice)}` : null
+  ].filter(Boolean).join(' · ')
 
-  // --- Existing Local SDK states ---
-  if (sdkState.status === 'active') {
-    return (
-      <div className="flex items-center gap-2 px-4 py-1.5 bg-green-50 dark:bg-green-950/30 border-b border-green-100 dark:border-green-900 text-xs text-green-700 dark:text-green-400">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-        <Zap className="w-3 h-3 shrink-0" />
-        <span>RunAnywhere SDK · {sdkState.accelerationMode === 'webgpu' ? 'WebGPU' : 'WASM CPU'} · {LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name}</span>
-      </div>
-    )
-  }
+  // ── 1. Priority: Download/Loading Indication ──
+  // If ANY model (LLM/STT/TTS) is downloading or loading, show this first regardless of mode.
   if (sdkState.status === 'downloading') {
     return (
       <div className="px-4 py-2 bg-orange-50 dark:bg-orange-950/30 border-b border-orange-100 dark:border-orange-900">
         <div className="flex items-center gap-2 text-xs text-orange-700 dark:text-orange-400 mb-1">
           <Download className="w-3 h-3 animate-bounce" />
-          Downloading model... {sdkState.downloadProgress}%
+          {sdkState.downloadLabel || 'Downloading models...'} {sdkState.downloadProgress}%
         </div>
         <Progress value={sdkState.downloadProgress} className="h-1" />
       </div>
@@ -734,10 +903,69 @@ function SDKStrip({ sdkState, activeModel, onOpenPanel }: { sdkState: SDKState; 
     return (
       <div className="flex items-center gap-2 px-4 py-1.5 bg-orange-50 dark:bg-orange-950/30 border-b border-orange-100 dark:border-orange-900 text-xs text-orange-700 dark:text-orange-400">
         <Loader2 className="w-3 h-3 animate-spin" />
-        Loading model into WASM...
+        Loading models into engine...
       </div>
     )
   }
+
+  // ── 2. Cloud Mode Logic ──
+  if (activeModel?.type === 'cloud') {
+    return (
+      <div className="flex items-center justify-between px-4 py-1.5 bg-blue-50 dark:bg-blue-950/30 border-b border-blue-100 dark:border-blue-900 text-xs text-blue-700 dark:text-blue-400">
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+            <HardDrive className="w-3 h-3 shrink-0" />
+            <span>Cloud Model Active · {activeModel.name}</span>
+          </span>
+          {speechInfo && <span className="text-[10px] opacity-80 border-l border-blue-200 pl-2">{speechInfo}</span>}
+        </div>
+        
+        {/* If local speech not ready, show warning or loading state */}
+        {(activeStt === 'local' && !sdkState.sttReady) || (activeTts === 'local' && !sdkState.ttsReady) ? (
+           <span className="text-[10px] text-orange-600 animate-pulse">Initializing Speech...</span>
+        ) : null}
+      </div>
+    )
+  }
+
+  // ── 3. Scripted Mode Logic ──
+  if (activeModel?.type === 'scripted') {
+    return (
+      <div className="flex items-center justify-between px-4 py-1.5 bg-secondary border-b border-border text-xs text-muted-foreground">
+        <div className="flex items-center gap-1.5">
+          <MessageSquare className="w-3 h-3" /> 
+          <span>Scripted Mode</span>
+          {speechInfo && <span className="text-[10px] opacity-80 ml-2 border-l pl-2">{speechInfo}</span>}
+        </div>
+        <div className="flex items-center gap-3">
+          {(activeStt === 'local' && !sdkState.sttReady) || (activeTts === 'local' && !sdkState.ttsReady) ? (
+             <span className="text-[10px] text-orange-600 animate-pulse">Initializing Speech...</span>
+          ) : (
+            <button onClick={onOpenPanel} className="text-xs font-semibold text-primary hover:underline">
+              Change Model →
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  
+  // ── 4. Local LLM Active Logic ──
+  if (sdkState.status === 'active') {
+    return (
+      <div className="flex items-center justify-between px-4 py-1.5 bg-green-50 dark:bg-green-950/30 border-b border-green-100 dark:border-green-900 text-xs text-green-700 dark:text-green-400">
+        <span className="flex items-center gap-2">
+           <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+           <Zap className="w-3 h-3 shrink-0" />
+           <span>RunAnywhere SDK · {sdkState.accelerationMode === 'webgpu' ? 'WebGPU' : 'WASM CPU'} · {LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name}</span>
+        </span>
+        {speechInfo && <span className="text-[10px] opacity-80 border-l border-green-200 dark:border-green-800 pl-2 ml-2">{speechInfo}</span>}
+      </div>
+    )
+  }
+
+  // ── 5. Default/Fallback Logic ──
   if (sdkState.status === 'ready' && !activeModel) {
     return (
       <div className="flex items-center justify-between px-4 py-1.5 bg-orange-50/70 dark:bg-orange-950/20 border-b border-orange-100 dark:border-orange-900">
@@ -750,6 +978,21 @@ function SDKStrip({ sdkState, activeModel, onOpenPanel }: { sdkState: SDKState; 
       </div>
     )
   }
+  
+  // ── 6. CATCH-ALL: Just show current speech setup if everything else fails ──
+  if (speechInfo) {
+      return (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-secondary/50 border-b border-border text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+            <span>Configured</span>
+            <span className="text-[10px] opacity-80 border-l border-border pl-2">{speechInfo}</span>
+          </div>
+          <button onClick={onOpenPanel} className="text-xs text-primary hover:underline">Settings</button>
+        </div>
+      )
+  }
+
   return null
 }
 
@@ -875,14 +1118,59 @@ export function PracticePage() {
     }
 
     if (!showModelPanel) {
+       // If in partner mode, wait for setup to complete
+       if (personality === 'partner' && !partnerConfig) return
+
        hasGreetedRef.current = true
-       const greeting = INITIAL_GREETINGS[personality as Mode] || INITIAL_GREETINGS.friendly
+       let greeting = INITIAL_GREETINGS[personality as Mode] || INITIAL_GREETINGS.friendly
+       let greetingSource = 'Initial Greeting (Scripted) · TTS: Browser SpeechSynthesis'
+
+       const priorSessions = sessions
+         .filter(s => s.id !== sessionIdRef.current && s.personality === personality && s.mode === mode && s.messages.length > 0)
+         .sort((a, b) => b.startedAt - a.startedAt)
+
+       if (priorSessions.length > 0) {
+         const recent = priorSessions[0]
+         const recentMessages = recent.messages.slice(-10)
+         const lastUser = [...recentMessages].reverse().find(m => m.role === 'user')
+
+         // Try to infer preferred name from prior user messages, e.g. "call me Biki".
+         let preferredName = ''
+         const allUserText = recentMessages
+           .filter(m => m.role === 'user')
+           .map(m => m.content)
+           .join(' ')
+         const nameMatch = allUserText.match(/call me\s+([a-zA-Z][a-zA-Z\-']{1,30})/i)
+         if (nameMatch?.[1]) preferredName = nameMatch[1]
+
+         if (lastUser?.content) {
+           greeting = preferredName
+             ? `Hey ${preferredName}, good to see you again. How have you been? Want to pick up where we left off?`
+             : `Hey, good to see you again. How have you been? Want to pick up where we left off?`
+         } else {
+           greeting = preferredName
+             ? `Hey ${preferredName}, welcome back. Want to continue where we paused last time?`
+             : `Hey, welcome back. Want to continue where we paused last time?`
+         }
+
+         greetingSource = 'Resume Greeting (From Chat History) · TTS: Browser SpeechSynthesis'
+       }
+       
+       // Customize greeting for partner mode
+       if (personality === 'partner' && partnerConfig) {
+          if (partnerConfig.partnerType === 'boyfriend') {
+             greeting = "Hey. I was hoping you'd come by. How was your day?"
+          } else {
+             greeting = "Hey... I missed you. How was your day?"
+          }
+          greetingSource = 'Initial Greeting (Partner Persona) · TTS: Browser SpeechSynthesis'
+       }
        
        setMessages([{
          id: ++msgIdRef.current,
          role: 'assistant',
          content: greeting,
-         source: 'Initial Greeting (Scripted)'
+         source: greetingSource
        }])
        
        if (isTTSEnabled) {
@@ -894,7 +1182,7 @@ export function PracticePage() {
          })
        }
     }
-  }, [showModelPanel, messages.length, personality, isTTSEnabled, partnerConfig])
+  }, [showModelPanel, messages.length, personality, mode, sessions, isTTSEnabled, partnerConfig])
 
   // ── Subscribe to SDK state + auto-init ────────────────────────────────────
   useEffect(() => {
@@ -904,22 +1192,69 @@ export function PracticePage() {
   }, [])
 
   const [activeModel, setActiveModel] = useState<ModelOption | null>(null)
+  
+  // Speech Providers State
+  const [activeStt, setActiveStt] = useState<SpeechProvider>('browser')
+  const [activeTts, setActiveTts] = useState<SpeechProvider>('browser')
+  const [activeVoice, setActiveVoice] = useState<string | undefined>(undefined)
 
   // ── Handle model selection from panel ─────────────────────────────────────
-  const handleSelectModel = useCallback(async (modelId: string) => {
+  const handleSelectModel = useCallback(async (
+     modelId: string, 
+     stt: SpeechProvider, 
+     tts: SpeechProvider, 
+     voiceId?: string
+  ) => {
+    setActiveStt(stt)
+    setActiveTts(tts)
+    setActiveVoice(voiceId)
+
     const selected = MODEL_INFO.find(m => m.id === modelId)
     if (!selected) return
 
     setActiveModel(selected)
 
+    // Load Speech Models if local requested
+    if (stt === 'local') {
+       try {
+         await loadSTTModel()
+       } catch (err) {
+         toast({ title: 'STT Load Failed', description: String(err), variant: 'destructive' })
+       }
+    }
+    if (tts === 'local' && voiceId) {
+       try {
+         await loadTTSModel(voiceId)
+       } catch (err) {
+         setActiveTts('browser')
+         setActiveVoice(undefined)
+         toast({
+           title: 'Local TTS Unavailable',
+           description: 'Fell back to browser voice. You can still continue the session.',
+           variant: 'destructive'
+         })
+       }
+    }
+
     // Case 1: Cloud or Scripted
     if (selected.type === 'cloud' || selected.type === 'scripted') {
       const isCloud = selected.type === 'cloud'
-      const description = isCloud ? `Using ${selected.name}` : `Using scripted responses`
+      const description = isCloud
+        ? `Using ${selected.name}. Warning: chat content is sent to Groq cloud.`
+        : `Using scripted responses`
       toast({ title: isCloud ? 'Cloud Mode Active' : 'Script Mode Active', description })
-      setShowModelPanel(false)
+      
+      // Do NOT close panel immediately if we are waiting for local Speech models
+      const waitingForStt = stt === 'local' && !sdkState.sttReady
+      const waitingForTts = tts === 'local' && !sdkState.ttsReady
+      
+      if (!waitingForStt && !waitingForTts) {
+          setShowModelPanel(false)
+      }
+      // If waiting, the useEffect below will close it when ready
       return
     }
+
 
     // Case 2: Local Model (RunAnywhere)
     try {
@@ -928,18 +1263,35 @@ export function PracticePage() {
     } catch (err) {
       toast({ title: 'Model load failed', description: String(err), variant: 'destructive' })
     }
-  }, [toast])
+  }, [toast, sdkState.sttReady, sdkState.ttsReady])
 
   // When model becomes active (local), auto-close the panel after a short delay
   useEffect(() => {
-    if (sdkState.status === 'active' && showModelPanel) {
-      const selected = MODEL_INFO.find(m => m.id === sdkState.activeModelId)
-      if (selected) setActiveModel(selected as ModelOption)
-      
-      const t = setTimeout(() => setShowModelPanel(false), 1200)
-      return () => clearTimeout(t)
+    // Only proceed if panel is open and we have a target model
+    if (!showModelPanel || !activeModel) return
+
+    const selected = activeModel
+    const isCloudOrScripted = selected.type === 'cloud' || selected.type === 'scripted'
+    const isLocalLLM = selected.type === 'local'
+
+    // Check Readiness
+    // For cloud/scripted, we assume LLM is "ready" immediately if activeModel is set
+    const llmReady = isLocalLLM ? (sdkState.status === 'active' && sdkState.activeModelId === selected.id) : true
+    
+    // Check speech readiness if local was requested
+    const sttReady = activeStt === 'local' ? sdkState.sttReady : true
+    const ttsReady = activeTts === 'local' ? sdkState.ttsReady : true
+
+    // Only close if NOT downloading
+    const isDownloading = sdkState.status === 'downloading' || sdkState.status === 'loading'
+
+    if (llmReady && sttReady && ttsReady && !isDownloading) {
+        // Force closing the panel if everything is ready
+        const t = setTimeout(() => setShowModelPanel(false), 800)
+        return () => clearTimeout(t)
     }
-  }, [sdkState.status, showModelPanel])
+  }, [sdkState.status, sdkState.activeModelId, sdkState.sttReady, sdkState.ttsReady, showModelPanel, activeStt, activeTts, activeModel])
+
 
   // ── Save current conversation to session history ───────────────────────────
   useEffect(() => {
@@ -963,22 +1315,46 @@ export function PracticePage() {
   const checkGrammar = (text: string): FeedbackData => {
     const corrections: string[] = []
     const suggestions: string[] = []
+
+    const raw = text.trim()
+    const normalized = raw.toLowerCase().replace(/\s+/g, ' ')
+
+    // Give a concrete rewrite first so users see what to say.
+    if (/^you are good voice$/.test(normalized)) {
+      corrections.push('Correct sentence: "You have a good voice."')
+      suggestions.push('Grammar rule: Use "have" (possession) instead of "are", and add "a" before singular countable nouns like "voice".')
+      suggestions.push('Natural alternative: "You sound great."')
+    }
+
     if (/\bi is\b/i.test(text)) corrections.push('Use "I am" instead of "I is"')
     if (/\bhe don't\b/i.test(text)) corrections.push('Use "he doesn\'t" instead of "he don\'t"')
     if (/\bshe don't\b/i.test(text)) corrections.push('Use "she doesn\'t" instead of "she don\'t"')
     if (/\bthey was\b/i.test(text)) corrections.push('Use "they were" instead of "they was"')
     if (/\bi have went\b/i.test(text)) corrections.push('Use "I have gone" instead of "I have went"')
     if (text.split(' ').length > 3 && !/[.!?]$/.test(text.trim())) {
-      suggestions.push('End sentences with punctuation for clarity')
+      const improved = formatSentenceForSuggestion(text)
+      const natural = formatNaturalAlternative(text, personality as Mode)
+      if (improved) corrections.push(`Correct sentence: "${improved}"`)
+      suggestions.push('Grammar rule: End complete sentences with punctuation for clarity.')
+      if (natural) suggestions.push(`Natural alternative: "${natural}"`)
     }
     return { corrections, suggestions }
   }
 
   // ── Send message (fully client-side) ─────────────────────────────────────
-  const handleSendMessage = useCallback(async (content: string) => {
+  const handleSendMessage = useCallback(async (content: string, inputMode: 'typed' | 'voice' = 'typed') => {
     if (!content.trim()) return
 
     const feedback = checkGrammar(content.trim())
+    const sttName = activeStt === 'local'
+      ? (STT_MODELS[0]?.name ?? 'Whisper Local')
+      : 'Browser Web Speech'
+    const ttsName = activeTts === 'local'
+      ? (TTS_MODELS.find(v => v.id === activeVoice)?.name ?? activeVoice ?? 'Local Voice')
+      : 'Browser SpeechSynthesis'
+    const llmName = activeModel?.type === 'cloud'
+      ? 'Groq Llama 3.1 8B'
+      : (LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name ?? activeModel?.name ?? 'Scripted')
 
     // Add user message immediately
     const userMsg: LocalMessage = {
@@ -986,11 +1362,31 @@ export function PracticePage() {
       role: 'user',
       content: content.trim(),
       feedback: feedback.corrections.length || feedback.suggestions.length ? feedback : undefined,
+      source: inputMode === 'voice'
+        ? `Input: Voice · STT: ${sttName}`
+        : `Input: Typed · STT: ${sttName}`,
     }
     setMessages(prev => [...prev, userMsg])
+    const currentConversation = [...messages, userMsg]
 
     // Build system prompt
     let sysPrompt = `${SYSTEM_PROMPTS[personality as Mode] ?? SYSTEM_PROMPTS.friendly}\n\nMode: ${MODE_CONTEXT[mode] ?? MODE_CONTEXT.conversation}`
+
+    // Pull lightweight context from previous saved sessions (same persona/mode)
+    // so new sessions still remember user preferences and recent facts.
+    const crossSessionContext = sessions
+      .filter(s => s.id !== sessionIdRef.current && s.personality === personality && s.mode === mode && s.messages.length > 0)
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, 2)
+      .flatMap(s => s.messages.slice(-4))
+      .slice(-8)
+
+    if (crossSessionContext.length > 0) {
+      const summarized = crossSessionContext
+        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n')
+      sysPrompt += `\n\nPrior conversation context (keep continuity, do not repeat greetings):\n${summarized}`
+    }
 
     if (personality === 'partner' && partnerConfig) {
       if (messages.length > 0) {
@@ -1016,10 +1412,9 @@ export function PracticePage() {
           setIsThinking(true)
           
           // Prepare messages for Groq
-          const groqMessages = [
+           const groqMessages = [
              { role: 'system', content: sysPrompt },
-             ...messages.slice(-10).map(m => ({ role: m.role, content: m.content })),
-             { role: 'user', content: content.trim() }
+             ...currentConversation.slice(-12).map(m => ({ role: m.role, content: m.content }))
           ]
 
           const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -1051,17 +1446,22 @@ export function PracticePage() {
             id: ++msgIdRef.current, 
             role: 'assistant', 
             content: aiText,
-            source: 'Generated by Groq Cloud (Llama 3)' 
+            source: `LLM: ${llmName} · STT: ${sttName} · TTS: ${ttsName}`
           }
           setMessages(prev => [...prev, aiMsg])
 
-          if (isTTSEnabled && aiText) {
-            const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
-            speakBrowser(aiText, {
-              onStart: () => setIsSpeaking(true),
-              onEnd:   () => setIsSpeaking(false),
-              gender
-            })
+
+            if (isTTSEnabled && aiText) {
+            if (activeTts === 'local' && sdkState.ttsReady && activeVoice) {
+               speakRunAnywhere(aiText, activeVoice).catch(console.error)
+            } else {
+               const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
+               speakBrowser(aiText, {
+                 onStart: () => setIsSpeaking(true),
+                 onEnd:   () => setIsSpeaking(false),
+                 gender
+               })
+            }
           }
           return // End here for cloud
         } catch (err) {
@@ -1085,8 +1485,8 @@ export function PracticePage() {
       // Use ChatML format for better context handling
       let chatPrompt = `<|im_start|>system\n${sysPrompt}<|im_end|>\n`
       
-      // Include last 10 messages for context
-      const contextMsgs = messages.slice(-10)
+      // Include current conversation window for context
+      const contextMsgs = currentConversation.slice(-12)
       for (const m of contextMsgs) {
         chatPrompt += `<|im_start|>${m.role}\n${m.content}<|im_end|>\n`
       }
@@ -1117,17 +1517,21 @@ export function PracticePage() {
           id: ++msgIdRef.current, 
           role: 'assistant', 
           content: aiText,
-          source: `Generated by ${LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name || 'AI Model'} (${sdkState.accelerationMode === 'webgpu' ? 'WebGPU' : 'WASM CPU'})`
+          source: `LLM: ${llmName} (${sdkState.accelerationMode === 'webgpu' ? 'WebGPU' : 'WASM CPU'}) · STT: ${sttName} · TTS: ${ttsName}`
         }
         setMessages(prev => [...prev, aiMsg])
 
-        if (isTTSEnabled && aiText) {
-          const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
-          speakBrowser(aiText, {
-            onStart: () => setIsSpeaking(true),
-            onEnd:   () => setIsSpeaking(false),
-            gender
-          })
+           if (isTTSEnabled && aiText) {
+          if (activeTts === 'local' && sdkState.ttsReady && activeVoice) {
+             speakRunAnywhere(aiText, activeVoice).catch(console.error)
+          } else {
+             const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
+             speakBrowser(aiText, {
+               onStart: () => setIsSpeaking(true),
+               onEnd:   () => setIsSpeaking(false),
+               gender
+             })
+          }
         }
       } catch (err) {
         console.error('[Practice] Generation failed:', err)
@@ -1202,12 +1606,12 @@ export function PracticePage() {
       let source = 'Scripted Response (Model not loaded)'
       if (activeModel?.type === 'cloud') {
          if (!GROQ_API_KEY) {
-           source = 'Scripted Fallback (Missing API Key)'
+           source = `Scripted Fallback (Missing VITE_GROQ_API_KEY) · STT: ${sttName} · TTS: ${ttsName}`
          } else {
-           source = 'Scripted Fallback (Cloud Error)'
+           source = `Scripted Fallback (Cloud Error) · STT: ${sttName} · TTS: ${ttsName}`
          }
       } else if (activeModel?.type === 'scripted') {
-         source = 'Scripted Response'
+         source = `Scripted Response · STT: ${sttName} · TTS: ${ttsName}`
       }
 
       const aiMsg: LocalMessage = { 
@@ -1219,15 +1623,34 @@ export function PracticePage() {
       setMessages(prev => [...prev, aiMsg])
 
       if (isTTSEnabled) {
-        const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
-        speakBrowser(picked, {
-          onStart: () => setIsSpeaking(true),
-          onEnd:   () => setIsSpeaking(false),
-          gender
-        })
+        if (activeTts === 'local' && sdkState.ttsReady && activeVoice) {
+           speakRunAnywhere(picked, activeVoice).catch(console.error)
+        } else {
+            const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
+            speakBrowser(picked, {
+              onStart: () => setIsSpeaking(true),
+              onEnd:   () => setIsSpeaking(false),
+              gender
+            })
+        }
       }
     }
-  }, [sdkState.status, personality, mode, messages, isTTSEnabled, partnerConfig])
+  }, [
+    sdkState.status,
+    sdkState.activeModelId,
+    sdkState.accelerationMode,
+    personality,
+    mode,
+    messages,
+    sessions,
+    isTTSEnabled,
+    partnerConfig,
+    activeModel,
+    activeStt,
+    activeTts,
+    activeVoice,
+    sdkState.ttsReady,
+  ])
 
       // ── Web Speech API STT ────────────────────────────────────────────────────
 
@@ -1240,31 +1663,59 @@ export function PracticePage() {
     transcriptRef.current = text
   }, [])
 
-  const stopListening = useCallback(() => {
+  const stopListening = useCallback(async () => {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    
+    // Local RunAnywhere STT (Whisper)
+    if (activeStt === 'local') {
+      const capture = recognitionRef.current as any
+      if (!capture) return
+
+      try {
+        setRecordingState('processing')
+        const samples = capture.stop()
+        
+        if (samples.length === 0) {
+           setRecordingState('idle')
+           return
+        }
+
+        const text = await transcribeWithRunAnywhere(samples)
+        updateTranscript(text)
+        
+        if (!text.trim()) {
+           setRecordingState('idle')
+        } else {
+           setRecordingState('reviewing')
+           setCurrentFeedback(checkGrammar(text))
+        }
+      } catch (err) {
+        console.error('[STT] Local failed:', err)
+        toast({ title: 'Speech Capture Error', description: String(err), variant: 'destructive' })
+        setRecordingState('idle')
+      }
+      return
+    }
+
+    // Default: Browser Web Speech API
     recognitionRef.current?.stop()
-    // Go to 'reviewing' state instead of 'processing'
     setRecordingState('reviewing')
     
-    // Check if we have anything to review
     setTimeout(() => {
       const finalText = transcriptRef.current.trim()
       if (!finalText) {
-          console.log('[STT] Empty transcript, cancelling review')
           setRecordingState('idle')
       } else {
-        // Generate feedback for review
         setCurrentFeedback(checkGrammar(finalText))
       }
     }, 200)
-
-  }, [updateTranscript])
+  }, [activeStt, updateTranscript])
 
   const confirmAndSend = useCallback(() => {
     const text = transcriptRef.current.trim()
     if (text) {
       setRecordingState('processing')
-      handleSendMessage(text)
+      handleSendMessage(text, 'voice')
       updateTranscript('')
       setCurrentFeedback(null)
       setRecordingState('idle')
@@ -1280,6 +1731,28 @@ export function PracticePage() {
   }, [updateTranscript])
 
   const startListening = useCallback(() => {
+    // 1. Path: Local RunAnywhere STT (Whisper)
+    if (activeStt === 'local') {
+       if (!sdkState.sttReady) {
+          toast({ title: 'STT Model Not Ready', variant: 'destructive' })
+          return
+       }
+       
+       const capture = new MicrophoneCapture()
+       capture.start().then(() => {
+          setRecordingState('listening')
+          // Auto-stop simulation for UX (Wait for silence or button press really)
+          // For now, we rely on user pressing stop button
+       }).catch(err => {
+          console.error(err)
+          setShowMicGuide(true)
+       })
+       // Store capture instance in ref to stop later
+       recognitionRef.current = capture
+       return
+    }
+
+    // 2. Path: Browser Web Speech API
     // Check for both SpeechRecognition (standard) and webkitSpeechRecognition (Chrome/Safari)
     // @ts-expect-error browser compatibility
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -1548,6 +2021,9 @@ export function PracticePage() {
       <SDKStrip 
         sdkState={sdkState} 
         activeModel={activeModel}
+        activeStt={activeStt}
+        activeTts={activeTts}
+        activeVoice={activeVoice}
         onOpenPanel={() => setShowModelPanel(true)} 
       />
 
@@ -1716,7 +2192,7 @@ export function PracticePage() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     const target = e.target as HTMLInputElement;
-                    handleSendMessage(target.value);
+                    handleSendMessage(target.value, 'typed');
                     target.value = '';
                   }
                 }}
@@ -1724,7 +2200,7 @@ export function PracticePage() {
               <Button size="icon" className="rounded-full shrink-0 h-11 w-11 shadow-sm" onClick={() => {
                  const input = document.getElementById('text-input') as HTMLInputElement;
                  if (input && input.value) {
-                    handleSendMessage(input.value);
+                      handleSendMessage(input.value, 'typed');
                     input.value = '';
                  }
               }}>

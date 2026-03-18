@@ -14,7 +14,11 @@ export function MaintainerAttribution() {
             className="group flex items-center gap-3 p-1.5 pr-4 rounded-full border bg-card/50 backdrop-blur-sm hover:bg-accent/50 hover:border-primary/20 transition-all duration-300"
           >
             <Avatar className="h-8 w-8 border shadow-sm group-hover:scale-105 transition-transform">
-              <AvatarImage src="https://github.com/algsoch.png" alt="@algsoch" />
+              <AvatarImage 
+                src="https://avatars.githubusercontent.com/u/176160078?v=4" 
+                alt="@algsoch" 
+                className="object-cover"
+              />
               <AvatarFallback>AG</AvatarFallback>
             </Avatar>
             <div className="flex flex-col text-left -space-y-0.5">
@@ -22,11 +26,15 @@ export function MaintainerAttribution() {
               <span className="text-[10px] text-muted-foreground">Project Maintainer</span>
             </div>
           </a>
-        </HoverCardTrigger>
+        </HoverCardTrigger>     
         <HoverCardContent className="w-80">
           <div className="flex justify-between space-x-4">
             <Avatar className="h-12 w-12">
-              <AvatarImage src="https://github.com/algsoch.png" />
+              <AvatarImage 
+                src="https://avatars.githubusercontent.com/u/176160078?v=4" 
+                alt="@algsoch" 
+                className="object-cover"
+              />
               <AvatarFallback>AG</AvatarFallback>
             </Avatar>
             <div className="space-y-1">
