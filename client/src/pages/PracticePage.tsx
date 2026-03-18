@@ -942,7 +942,11 @@ export function PracticePage() {
             })
           })
 
-          if (!response.ok) throw new Error(`Groq API Error: ${response.status}`)
+          if (!response.ok) {
+            const errText = await response.text()
+            console.error('Groq API Error Details:', errText)
+            throw new Error(`Groq API Error: ${response.status} - ${errText}`)
+          }
           
           const data = await response.json()
           const aiText = data.choices?.[0]?.message?.content || ''
