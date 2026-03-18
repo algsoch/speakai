@@ -8,3 +8,4 @@ vite.config.ts.*
 ._*
 .DS_Store
 
+.env
