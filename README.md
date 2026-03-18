@@ -47,17 +47,24 @@ Then open **http://localhost:5001** in Chrome or Edge.
 
 ---
 
-## Deployment to Render
+## Deployment to Render (Static Site)
 
-1. **Dashboard**: Create a new **Web Service** on [Render](https://render.com/).
+Since the AI runs entirely in the browser using WebAssembly, this app can be deployed as a **Static Site** (often free on Render).
+
+1. **Dashboard**: Create a new **Static Site** on [Render](https://render.com/).
 2. **Repo**: Connect this GitHub repository.
 3. **Settings**:
-   - **Environment**: `Node`
    - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-   - **Environment Variables**: Add `PORT` (set to `10000` or allow Render to set it).
+   - **Publish Directory**: `dist/public`
+4. **Rewrite Rules**:
+   - Go to the **Redirects/Rewrites** tab for your service.
+   - Add a Rewrite rule:
+     - **Source**: `/*`
+     - **Destination**: `/index.html`
+     - **Action**: `Rewrite`
+   - This ensures that refreshing the page on sub-paths (like `/practice/...`) works correctly.
 
-The app serves static files from `dist/` and handles API routes via Express.
+The app serves static files from `dist/public`.
 
 ## Folder structure
 
