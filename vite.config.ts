@@ -12,6 +12,7 @@ export default defineConfig({
     },
   },
   root: path.resolve(import.meta.dirname, "client"),
+  envDir: path.resolve(import.meta.dirname), // Ensure .env is loaded from project root
   base: "./",
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
