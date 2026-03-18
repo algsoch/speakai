@@ -141,7 +141,7 @@ type ModelOption = {
   sizeMB?: number
   description: string
   recommended?: boolean
-  type: 'local' | 'cloud'
+  type: 'local' | 'cloud' | 'scripted'
 }
 
 const MODEL_INFO: ModelOption[] = [
@@ -154,17 +154,23 @@ const MODEL_INFO: ModelOption[] = [
     recommended: false, 
   },
   {
+    id: 'scripted-fallback',
+    name: 'Scripted Responses',
+    description: 'Instant · Works offline · No AI model required',
+    type: 'scripted',
+    recommended: false,
+  },
+  {
     ...LLM_MODELS[0],
     sizeMB: 300,
-    description: 'LiquidAI LFM2 · Fast responses · Best quality',
+    description: 'LiquidAI LFM2 · Runs on device · High quality',
     recommended: true,
     type: 'local',
   },
   {
     ...LLM_MODELS[1],
     sizeMB: 250,
-    description: 'SmolLM2 360M · Tiny & fast · Lower memory use',
-    recommended: false,
+    description: 'SmolLM2 360M · Runs on device · Low memory',
     type: 'local',
   },
 ]
@@ -444,6 +450,9 @@ function ModelDownloadPanel({
   const isActive      = sdkState.status === 'active'
   const isInitializing = sdkState.status === 'initializing' || sdkState.status === 'uninitialized'
 
+  const selectedModel = MODEL_INFO.find(m => m.id === selected)
+  const isLocalModel  = selectedModel?.type === 'local'
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 bg-background">
       <div className="w-full max-w-lg">
@@ -455,7 +464,7 @@ function ModelDownloadPanel({
           </div>
           <h2 className="text-xl font-bold text-foreground mb-2">Choose Your AI Model</h2>
           <p className="text-sm text-muted-foreground max-w-sm">
-            Select a model to download. It runs 100% on your device via WebAssembly — no API keys, fully private.
+            Select a model. Local models run 100% on your device. Cloud models require an API key.
           </p>
         </div>
 
@@ -476,7 +485,9 @@ function ModelDownloadPanel({
                 <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
                   selected === m.id ? 'bg-primary/15' : 'bg-secondary'
                 }`}>
-                  <HardDrive className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />
+                  {m.type === 'cloud' && <HardDrive className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
+                  {m.type === 'local' && <Download className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
+                  {m.type === 'scripted' && <MessageSquare className={`w-5 h-5 ${selected === m.id ? 'text-primary' : 'text-muted-foreground'}`} />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -489,8 +500,12 @@ function ModelDownloadPanel({
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">{m.description}</p>
                   <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                    <Download className="w-3 h-3" />
-                    ~{m.sizeMB} MB · downloads once, then offline
+                    {m.type === 'local' 
+                      ? <>~{m.sizeMB} MB · downloads once</>
+                      : m.type === 'cloud' 
+                        ? <>Requires active internet</>
+                        : <>No download required</>
+                    }
                   </p>
                 </div>
                 <div className={`w-5 h-5 rounded-full border-2 shrink-0 mt-1 flex items-center justify-center transition-colors ${
@@ -614,12 +629,17 @@ function ModelDownloadPanel({
           {!isDownloading && !isActive && (
             <Button
               onClick={() => onSelectModel(selected)}
-              disabled={isInitializing}
+              disabled={isInitializing && isLocalModel}
               data-testid="button-download-model"
               className="w-full rounded-full py-5 text-sm font-semibold bg-primary hover:bg-primary/90 text-white shadow-md shadow-orange-500/20"
             >
-              <Download className="w-4 h-4 mr-2" />
-              Download &amp; Load Model
+              {!isLocalModel ? <Zap className="w-4 h-4 mr-2" /> : <Download className="w-4 h-4 mr-2" />}
+              {selectedModel?.type === 'cloud' 
+                ? 'Use Cloud Model' 
+                : selectedModel?.type === 'scripted' 
+                  ? 'Use Scripted Responses'
+                  : 'Download & Load Model'
+              }
               <ChevronRight className="w-4 h-4 ml-1" />
             </Button>
           )}
@@ -656,7 +676,31 @@ function ModelDownloadPanel({
 
 // ── SDK Status Strip ──────────────────────────────────────────────────────────
 
-function SDKStrip({ sdkState, onOpenPanel }: { sdkState: SDKState; onOpenPanel: () => void }) {
+function SDKStrip({ sdkState, activeModel, onOpenPanel }: { sdkState: SDKState; activeModel: ModelOption | null; onOpenPanel: () => void }) {
+  // If we are in "Cloud" or "Scripted" mode, show a different indicator
+  if (activeModel?.type === 'cloud') {
+    return (
+      <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 dark:bg-blue-950/30 border-b border-blue-100 dark:border-blue-900 text-xs text-blue-700 dark:text-blue-400">
+        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+        <HardDrive className="w-3 h-3 shrink-0" />
+        <span>Cloud Model Active · {activeModel.name}</span>
+      </div>
+    )
+  }
+  if (activeModel?.type === 'scripted') {
+    return (
+      <div className="flex items-center justify-between px-4 py-1.5 bg-secondary border-b border-border text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <MessageSquare className="w-3 h-3" /> Scripted Mode (Offline)
+        </span>
+        <button onClick={onOpenPanel} className="text-xs font-semibold text-primary hover:underline">
+          Change Model →
+        </button>
+      </div>
+    )
+  }
+
+  // --- Existing Local SDK states ---
   if (sdkState.status === 'active') {
     return (
       <div className="flex items-center gap-2 px-4 py-1.5 bg-green-50 dark:bg-green-950/30 border-b border-green-100 dark:border-green-900 text-xs text-green-700 dark:text-green-400">
@@ -685,7 +729,7 @@ function SDKStrip({ sdkState, onOpenPanel }: { sdkState: SDKState; onOpenPanel: 
       </div>
     )
   }
-  if (sdkState.status === 'ready') {
+  if (sdkState.status === 'ready' && !activeModel) {
     return (
       <div className="flex items-center justify-between px-4 py-1.5 bg-orange-50/70 dark:bg-orange-950/20 border-b border-orange-100 dark:border-orange-900">
         <span className="text-xs text-orange-600 dark:text-orange-400 flex items-center gap-1.5">
@@ -791,9 +835,11 @@ export function PracticePage() {
 
     setActiveModel(selected)
 
-    // Case 1: Cloud Model (Groq)
-    if (selected.type === 'cloud') {
-      toast({ title: 'Cloud mode active', description: `Using ${selected.name}` })
+    // Case 1: Cloud or Scripted
+    if (selected.type === 'cloud' || selected.type === 'scripted') {
+      const isCloud = selected.type === 'cloud'
+      const description = isCloud ? `Using ${selected.name}` : `Using scripted responses`
+      toast({ title: isCloud ? 'Cloud Mode Active' : 'Script Mode Active', description })
       setShowModelPanel(false)
       return
     }
@@ -1371,7 +1417,11 @@ export function PracticePage() {
       </header>
 
       {/* SDK strip */}
-      <SDKStrip sdkState={sdkState} onOpenPanel={() => setShowModelPanel(true)} />
+      <SDKStrip 
+        sdkState={sdkState} 
+        activeModel={activeModel}
+        onOpenPanel={() => setShowModelPanel(true)} 
+      />
 
       {/* Chat area */}
       <ScrollArea className="flex-1 px-4">
