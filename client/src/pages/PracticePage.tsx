@@ -1097,11 +1097,22 @@ export function PracticePage() {
       const pool = responses[personality] ?? responses.friendly
       const picked = pool[Math.floor(Math.random() * pool.length)]
 
+      let source = 'Scripted Response (Model not loaded)'
+      if (activeModel?.type === 'cloud') {
+         if (!GROQ_API_KEY) {
+           source = 'Scripted Fallback (Missing API Key)'
+         } else {
+           source = 'Scripted Fallback (Cloud Error)'
+         }
+      } else if (activeModel?.type === 'scripted') {
+         source = 'Scripted Response'
+      }
+
       const aiMsg: LocalMessage = { 
         id: ++msgIdRef.current, 
         role: 'assistant', 
         content: picked,
-        source: 'Scripted Response (Model not loaded)' 
+        source
       }
       setMessages(prev => [...prev, aiMsg])
 
@@ -1386,11 +1397,13 @@ export function PracticePage() {
               'bg-muted-foreground'
             }`} />
             <span onClick={() => setShowModelPanel(true)} className="text-[10px] text-muted-foreground cursor-pointer hover:text-primary transition-colors truncate max-w-[180px]">
-              {sdkState.status === 'active' 
-                ? `${LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name} · ${sdkState.accelerationMode === 'webgpu' ? 'GPU' : 'CPU'}`
-                : sdkState.status === 'downloading' ? `Downloading ${sdkState.downloadProgress}%`
-                : sdkState.status === 'loading' ? 'Loading Model...' 
-                : 'Browser Speech (Tap to Load AI)'}
+              {activeModel?.type === 'cloud' ? `${activeModel.name}`
+                : activeModel?.type === 'scripted' ? 'Scripted Response Mode'
+                : sdkState.status === 'active' 
+                  ? `${LLM_MODELS.find(m => m.id === sdkState.activeModelId)?.name} · ${sdkState.accelerationMode === 'webgpu' ? 'GPU' : 'CPU'}`
+                  : sdkState.status === 'downloading' ? `Downloading ${sdkState.downloadProgress}%`
+                  : sdkState.status === 'loading' ? 'Loading Model...' 
+                  : 'Browser Speech (Tap to Load AI)'}
             </span>
           </div>
         </div>
