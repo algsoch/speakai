@@ -185,7 +185,7 @@ function MessageBubble({ message, isNew }: { message: LocalMessage; isNew?: bool
         }`}>
           {message.content}
         </div>
-        {hasFb && isUser && (
+        {isUser && hasFb && (
           <div className="space-y-1 w-full">
             {message.feedback!.corrections.map((c, i) => (
               <div key={i} className="flex items-start gap-2 text-xs bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-1.5">
@@ -199,6 +199,14 @@ function MessageBubble({ message, isNew }: { message: LocalMessage; isNew?: bool
                 <span className="text-blue-700 dark:text-blue-300">{s}</span>
               </div>
             ))}
+          </div>
+        )}
+        
+        {/* Attribution / Source indicator */}
+        {!isUser && message.source && (
+          <div className="flex items-center gap-1.5 px-1 animate-in fade-in duration-500">
+             <div className="w-1 h-1 rounded-full bg-primary/40"></div>
+             <span className="text-[10px] text-muted-foreground/60 font-medium uppercase tracking-wider">{message.source}</span>
           </div>
         )}
       </div>
@@ -733,7 +741,8 @@ export function PracticePage() {
        setMessages([{
          id: ++msgIdRef.current,
          role: 'assistant',
-         content: greeting
+         content: greeting,
+         source: 'Initial Greeting (Scripted)'
        }])
        
        if (isTTSEnabled) {
@@ -944,7 +953,7 @@ export function PracticePage() {
         id: ++msgIdRef.current, 
         role: 'assistant', 
         content: picked,
-        source: 'Scripted Fallback (Model not loaded)' 
+        source: 'Scripted Response (Model not loaded)' 
       }
       setMessages(prev => [...prev, aiMsg])
 
