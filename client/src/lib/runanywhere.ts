@@ -327,7 +327,7 @@ export async function transcribeWithRunAnywhere(audioSamples: Float32Array): Pro
  */
 export function speakBrowser(
   text: string,
-  opts: { rate?: number; onStart?: () => void; onEnd?: () => void } = {}
+  opts: { rate?: number; onStart?: () => void; onEnd?: () => void; gender?: 'male' | 'female' } = {}
 ): SpeechSynthesisUtterance {
   window.speechSynthesis?.cancel()
   const utt = new SpeechSynthesisUtterance(text)
@@ -335,11 +335,26 @@ export function speakBrowser(
   utt.pitch = 1.0
   utt.volume = 1.0
   const voices = window.speechSynthesis.getVoices()
-  const preferred = voices.find(v =>
-    v.lang.startsWith('en') &&
-    (v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Daniel'))
-  ) ?? voices.find(v => v.lang.startsWith('en-US'))
+  
+  let preferred: SpeechSynthesisVoice | undefined;
+
+  // 1. Try to find a voice matching the requested gender (heuristic based on name)
+  if (opts.gender === 'female') {
+    preferred = voices.find(v => (v.name.includes('Female') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Zira') || v.name.includes('Google US English')) && v.lang.startsWith('en'))
+  } else if (opts.gender === 'male') {
+    preferred = voices.find(v => (v.name.includes('Male') || v.name.includes('Daniel') || v.name.includes('David') || v.name.includes('Microsoft Mark') || v.name.includes('Google UK English Male')) && v.lang.startsWith('en'))
+  }
+
+  // 2. Fallback to generic high-quality voices if gender specific failed or not requested
+  if (!preferred) {
+      preferred = voices.find(v =>
+        v.lang.startsWith('en') &&
+        (v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Daniel'))
+      ) ?? voices.find(v => v.lang.startsWith('en-US'))
+  }
+
   if (preferred) utt.voice = preferred
+  
   if (opts.onStart) utt.onstart = opts.onStart
   if (opts.onEnd) utt.onend = opts.onEnd
   window.speechSynthesis.speak(utt)

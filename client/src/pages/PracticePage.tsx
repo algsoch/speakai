@@ -5,6 +5,10 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Mic, MicOff, Volume2, VolumeX, ChevronLeft,
   RotateCcw, AlertTriangle, Lightbulb, Sun, Moon,
@@ -33,6 +37,11 @@ type RecordingState = 'idle' | 'listening' | 'processing' | 'reviewing'
 interface FeedbackData {
   corrections: string[]
   suggestions: string[]
+}
+
+type PartnerConfig = {
+  userGender: string
+  partnerType: string
 }
 
 interface LocalMessage {
@@ -744,6 +753,71 @@ function SDKStrip({ sdkState, activeModel, onOpenPanel }: { sdkState: SDKState; 
   return null
 }
 
+// ── Partner Setup Panel ──────────────────────────────────────────────────────
+
+function PartnerSetupPanel({ onComplete }: { onComplete: (config: PartnerConfig) => void }) {
+  const [userGender, setUserGender] = useState('male')
+  const [partnerType, setPartnerType] = useState('girlfriend')
+  
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-300">
+      <Card className="w-full max-w-md shadow-2xl border-primary/20 bg-background/95 backdrop-blur">
+        <CardHeader>
+          <CardTitle>Partner Persona Setup</CardTitle>
+          <CardDescription>Tell us a bit about yourself and who you want to practice with so we can adapt the response.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+           {/* User Gender */}
+           <div className="space-y-3">
+             <Label>I identify as...</Label>
+             <Select value={userGender} onValueChange={setUserGender}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="male">Male</SelectItem>
+                  <SelectItem value="female">Female</SelectItem>
+                  <SelectItem value="non-binary">Non-binary</SelectItem>
+                </SelectContent>
+             </Select>
+           </div>
+           
+           {/* Partner Type */}
+           <div className="space-y-3">
+             <Label>My partner is...</Label>
+             <RadioGroup value={partnerType} onValueChange={setPartnerType} className="grid grid-cols-3 gap-2">
+                <div>
+                  <RadioGroupItem value="girlfriend" id="gf" className="peer sr-only" />
+                  <Label htmlFor="gf" className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 cursor-pointer text-center text-sm transition-all">
+                    Girlfriend
+                    <span className="text-xl mt-1">👩</span>
+                  </Label>
+                </div>
+                 <div>
+                  <RadioGroupItem value="boyfriend" id="bf" className="peer sr-only" />
+                  <Label htmlFor="bf" className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 cursor-pointer text-center text-sm transition-all">
+                    Boyfriend
+                    <span className="text-xl mt-1">👨</span> 
+                  </Label>
+                </div>
+                 <div>
+                  <RadioGroupItem value="partner" id="pt" className="peer sr-only" />
+                  <Label htmlFor="pt" className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 cursor-pointer text-center text-sm transition-all">
+                    Partner
+                    <span className="text-xl mt-1">🧑</span>
+                  </Label>
+                </div>
+             </RadioGroup>
+           </div>
+        </CardContent>
+        <CardFooter>
+          <Button className="w-full" onClick={() => onComplete({ userGender, partnerType })}>
+            Start Conversation
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main Practice Page ────────────────────────────────────────────────────────
 
 export function PracticePage() {
@@ -754,7 +828,8 @@ export function PracticePage() {
   const msgIdRef = useRef(0)
 
   // ── State ─────────────────────────────────────────────────────────────────
-  const [showModelPanel, setShowModelPanel] = useState(true)  // show on first enter
+  const [showModelPanel, setShowModelPanel] = useState(true)
+  const [partnerConfig, setPartnerConfig] = useState<PartnerConfig | null>(null)
   const [messages, setMessages] = useState<LocalMessage[]>([])
   const [recordingState, setRecordingState] = useState<RecordingState>('idle')
   const [transcript, setTranscript]         = useState('')
@@ -811,13 +886,15 @@ export function PracticePage() {
        }])
        
        if (isTTSEnabled) {
+         const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
          speakBrowser(greeting, {
            onStart: () => setIsSpeaking(true),
            onEnd: () => setIsSpeaking(false),
+           gender
          })
        }
     }
-  }, [showModelPanel, messages.length, personality, isTTSEnabled])
+  }, [showModelPanel, messages.length, personality, isTTSEnabled, partnerConfig])
 
   // ── Subscribe to SDK state + auto-init ────────────────────────────────────
   useEffect(() => {
@@ -913,7 +990,24 @@ export function PracticePage() {
     setMessages(prev => [...prev, userMsg])
 
     // Build system prompt
-    const sysPrompt = `${SYSTEM_PROMPTS[personality as Mode] ?? SYSTEM_PROMPTS.friendly}\n\nMode: ${MODE_CONTEXT[mode] ?? MODE_CONTEXT.conversation}\n\nIMPORTANT: Reply in 2-4 sentences. No markdown. Be conversational and friendly.`
+    let sysPrompt = `${SYSTEM_PROMPTS[personality as Mode] ?? SYSTEM_PROMPTS.friendly}\n\nMode: ${MODE_CONTEXT[mode] ?? MODE_CONTEXT.conversation}`
+
+    if (personality === 'partner' && partnerConfig) {
+      if (messages.length > 0) {
+        // Simple analysis of previous chat to influence initial direction if resuming,
+        // but for new chats, we rely on the persona.
+        // If there ARE messages, we could summarize them, but for now we trust the LLM's context window (slice(-10)).
+        
+        // However, if the user requested "first analysis then question",
+        // we can instruct the model to resume naturally from the last context.
+        sysPrompt += `\n\nCONTEXT:\nYou are the user's ${partnerConfig.partnerType}.\nThe user identifies as ${partnerConfig.userGender}.\nAdopt the persona of a loving ${partnerConfig.partnerType}.\n\nRefer to the conversation history to continue relevantly.`
+
+      } else {
+        sysPrompt += `\n\nCONTEXT:\nYou are the user's ${partnerConfig.partnerType}.\nThe user identifies as ${partnerConfig.userGender}.\nAdopt the persona of a loving ${partnerConfig.partnerType}.`
+      }
+    }
+    
+    sysPrompt += `\n\nIMPORTANT: Reply in 2-4 sentences. No markdown. Be conversational and friendly.`
 
     // ── PATH 1: Groq Cloud API ──
     if (activeModel?.type === 'cloud') {
@@ -962,9 +1056,11 @@ export function PracticePage() {
           setMessages(prev => [...prev, aiMsg])
 
           if (isTTSEnabled && aiText) {
+            const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
             speakBrowser(aiText, {
               onStart: () => setIsSpeaking(true),
               onEnd:   () => setIsSpeaking(false),
+              gender
             })
           }
           return // End here for cloud
@@ -1026,9 +1122,11 @@ export function PracticePage() {
         setMessages(prev => [...prev, aiMsg])
 
         if (isTTSEnabled && aiText) {
+          const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
           speakBrowser(aiText, {
             onStart: () => setIsSpeaking(true),
             onEnd:   () => setIsSpeaking(false),
+            gender
           })
         }
       } catch (err) {
@@ -1121,13 +1219,15 @@ export function PracticePage() {
       setMessages(prev => [...prev, aiMsg])
 
       if (isTTSEnabled) {
+        const gender = (personality === 'partner' && partnerConfig?.partnerType === 'boyfriend') ? 'male' : (personality === 'partner' && partnerConfig?.partnerType === 'girlfriend') ? 'female' : undefined
         speakBrowser(picked, {
           onStart: () => setIsSpeaking(true),
           onEnd:   () => setIsSpeaking(false),
+          gender
         })
       }
     }
-  }, [sdkState.status, personality, mode, messages, isTTSEnabled])
+  }, [sdkState.status, personality, mode, messages, isTTSEnabled, partnerConfig])
 
       // ── Web Speech API STT ────────────────────────────────────────────────────
 
@@ -1348,8 +1448,13 @@ export function PracticePage() {
 
   // ── Render chat ───────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col relative">
 
+      {/* Partner Setup Overlay */}
+      {personality === 'partner' && !partnerConfig && (
+        <PartnerSetupPanel onComplete={setPartnerConfig} />
+      )}
+      
       {/* Mic permission guide overlay */}
       {showMicGuide && (
         <MicPermissionGuide

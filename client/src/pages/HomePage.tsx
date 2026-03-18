@@ -3,7 +3,7 @@ import { useLocation } from 'wouter'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useTheme } from '@/components/ThemeProvider'
-import { PerplexityAttribution } from '@/components/PerplexityAttribution'
+import { MaintainerAttribution } from '@/components/MaintainerAttribution'
 import {
   Mic, Moon, Sun, Zap, MessageCircle, Briefcase,
   BookOpen, Swords, BookMarked, ChevronRight, Cpu,
@@ -215,7 +215,7 @@ for await (const token of stream) { updateUI(token) }`}</pre>
           <p className="text-xs text-muted-foreground">
             Models download once, then run fully offline · Chrome / Edge recommended
           </p>
-          <PerplexityAttribution />
+          <MaintainerAttribution />
         </div>
       </main>
     </div>
