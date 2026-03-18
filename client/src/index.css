@@ -1,0 +1,269 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Font variables */
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-serif: 'Georgia', serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    /* ── RunAnywhere Brand Theme ── */
+    /* Core: white surfaces, orange primary accent, dark text */
+    --background: 0 0% 100%;
+    --foreground: 222 20% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 20% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 20% 10%;
+
+    /* Primary: RunAnywhere orange #F97316 */
+    --primary: 25 95% 53%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 20% 25%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 50%;
+
+    --accent: 25 100% 97%;
+    --accent-foreground: 25 95% 40%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 25 95% 53%;
+
+    --radius: 0.75rem;
+
+    /* Sidebar & extended tokens */
+    --sidebar: 220 14% 98%;
+    --sidebar-foreground: 222 20% 20%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 25 95% 53%;
+    --sidebar-primary: 25 95% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 14% 96%;
+    --sidebar-accent-foreground: 222 20% 25%;
+    --card-border: 220 13% 91%;
+    --popover-border: 220 13% 91%;
+    --primary-border: hsl(25 90% 45%);
+    --secondary-border: hsl(220 13% 85%);
+    --muted-border: hsl(220 13% 88%);
+    --accent-border: hsl(25 80% 80%);
+    --destructive-border: hsl(0 80% 55%);
+
+    --chart-1: 25 95% 53%;
+    --chart-2: 190 75% 45%;
+    --chart-3: 145 60% 45%;
+    --chart-4: 258 70% 55%;
+    --chart-5: 320 65% 50%;
+
+    /* Custom semantic tokens */
+    --color-orange: 25 95% 53%;
+    --color-success: 145 60% 42%;
+    --color-warning: 38 90% 50%;
+    --color-info: 210 80% 50%;
+    --color-listening: 190 75% 45%;
+  }
+
+  /* Dark mode */
+  .dark {
+    --background: 222 22% 8%;
+    --foreground: 220 15% 90%;
+    --card: 222 20% 11%;
+    --card-foreground: 220 15% 90%;
+    --popover: 222 20% 11%;
+    --popover-foreground: 220 15% 90%;
+    --primary: 25 95% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 18% 16%;
+    --secondary-foreground: 220 12% 72%;
+    --muted: 222 18% 16%;
+    --muted-foreground: 220 10% 50%;
+    --accent: 25 50% 18%;
+    --accent-foreground: 25 95% 70%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 222 16% 20%;
+    --input: 222 16% 20%;
+    --ring: 25 95% 58%;
+    --sidebar: 222 22% 9%;
+    --sidebar-foreground: 220 12% 82%;
+    --sidebar-border: 222 16% 18%;
+    --card-border: 222 16% 20%;
+    --popover-border: 222 16% 20%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+    min-height: 100dvh;
+  }
+}
+
+/* Elevation system */
+@layer utilities {
+  .hover-elevate {
+    transition: box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .hover-elevate:hover {
+    box-shadow: 0 4px 16px hsl(25 95% 53% / 0.15);
+    transform: translateY(-1px);
+  }
+  .active-elevate-2:active {
+    transform: scale(0.98);
+  }
+}
+
+/* ── Animations ── */
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes progress-bar {
+  0% { width: 0%; }
+  100% { width: 100%; }
+}
+@keyframes gradient-x {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.wave-bar {
+  display: inline-block;
+  width: 3px;
+  border-radius: 9999px;
+  background: hsl(var(--color-listening));
+  animation: wave 0.8s ease-in-out infinite;
+}
+.wave-bar:nth-child(2) { animation-delay: 0.1s; }
+.wave-bar:nth-child(3) { animation-delay: 0.2s; }
+.wave-bar:nth-child(4) { animation-delay: 0.3s; }
+.wave-bar:nth-child(5) { animation-delay: 0.4s; }
+.wave-bar:nth-child(6) { animation-delay: 0.3s; }
+.wave-bar:nth-child(7) { animation-delay: 0.2s; }
+.wave-bar:nth-child(8) { animation-delay: 0.1s; }
+
+.pulse-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid hsl(25 95% 53% / 0.5);
+  animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.message-enter {
+  animation: fade-in-up 0.25s ease-out forwards;
+}
+
+.thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: hsl(var(--primary));
+  animation: wave 1s ease-in-out infinite;
+}
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* RunAnywhere brand gradient */
+.ra-gradient-text {
+  background: linear-gradient(135deg, #F97316, #EF4444);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Orange mic pulse */
+.mic-pulse {
+  box-shadow: 0 0 0 0 hsl(25 95% 53% / 0.4);
+  animation: mic-pulse-anim 1.5s ease-in-out infinite;
+}
+@keyframes mic-pulse-anim {
+  0% { box-shadow: 0 0 0 0 hsl(25 95% 53% / 0.4); }
+  70% { box-shadow: 0 0 0 20px hsl(25 95% 53% / 0); }
+  100% { box-shadow: 0 0 0 0 hsl(25 95% 53% / 0); }
+}
+
+/* RunAnywhere nav pill style */
+.ra-nav {
+  border: 1.5px solid hsl(var(--border));
+  border-radius: 9999px;
+  background: hsl(var(--background));
+}
+
+/* Code block style matching runanywhere.ai */
+.ra-code {
+  background: hsl(222 22% 8%);
+  border: 1px solid hsl(222 16% 20%);
+  border-radius: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: hsl(210 50% 80%);
+  padding: 1.25rem;
+  overflow-x: auto;
+}
+.ra-code .keyword { color: #F97316; }
+.ra-code .string { color: #4ADE80; }
+.ra-code .comment { color: hsl(220 10% 50%); }
+
+/* Download progress bar */
+.download-progress {
+  height: 4px;
+  border-radius: 9999px;
+  background: hsl(var(--border));
+  overflow: hidden;
+}
+.download-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #F97316, #EF4444);
+  transition: width 0.3s ease;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.3); }
+
+:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
