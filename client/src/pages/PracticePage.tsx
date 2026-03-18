@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Input } from '@/components/ui/input'
 import {
   Mic, MicOff, Volume2, VolumeX, ChevronLeft,
   RotateCcw, AlertTriangle, Lightbulb, Sun, Moon,
@@ -13,7 +14,8 @@ import {
 } from 'lucide-react'
 import { useTheme } from '@/components/ThemeProvider'
 import { useToast } from '@/hooks/use-toast'
-import { PerplexityAttribution } from '@/components/PerplexityAttribution'
+// Remove the import
+
 import {
   initSDK, loadLLMModel, generateResponse, resetContext,
   speakBrowser, subscribeSDK,
@@ -1390,34 +1392,63 @@ export function PracticePage() {
       {/* Mic controls - Hide when reviewing */}
       {recordingState !== 'reviewing' && (
         <div className={`border-t border-border bg-background px-4 py-4 pb-8 transition-all duration-300`}>
-          <div className="max-w-2xl mx-auto flex flex-col items-center gap-2">
-            <div className="relative flex items-center justify-center">
-              {recordingState === 'listening' && (
-                <>
-                  <div className="pulse-ring" />
-                  <div className="pulse-ring" style={{ animationDelay: '0.5s' }} />
-                </>
-              )}
-              <button
-                onClick={handleMicClick}
-                disabled={isPending}
-                data-testid="button-microphone"
-                aria-label={recordingState === 'listening' ? 'Stop recording' : 'Start recording'}
-                className={`relative z-10 w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200 ${
-                  recordingState === 'listening'
-                    ? 'bg-red-500 text-white scale-110 shadow-lg shadow-red-500/30'
-                    : isPending
-                    ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                    : 'bg-primary text-white hover:scale-105 active:scale-95 shadow-lg shadow-orange-500/30'
-                }`}
-              >
-                {isPending ? <Loader2 className="w-6 h-6 animate-spin" />
-                  : recordingState === 'listening' ? <div className="w-6 h-6 rounded-sm bg-white" />
-                  : <Mic className="w-6 h-6" />}
-              </button>
+          <div className="max-w-2xl mx-auto flex flex-col items-center gap-4">
+            
+            {/* 1. Voice Input - Centered */}
+            <div className="flex flex-col items-center gap-2">
+              <div className="relative flex items-center justify-center">
+                {recordingState === 'listening' && (
+                  <>
+                    <div className="pulse-ring" />
+                    <div className="pulse-ring" style={{ animationDelay: '0.5s' }} />
+                  </>
+                )}
+                <button
+                  onClick={handleMicClick}
+                  disabled={isPending}
+                  data-testid="button-microphone"
+                  aria-label={recordingState === 'listening' ? 'Stop recording' : 'Start recording'}
+                  className={`relative z-10 w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200 ${
+                    recordingState === 'listening'
+                      ? 'bg-red-500 text-white scale-110 shadow-lg shadow-red-500/30'
+                      : isPending
+                      ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                      : 'bg-primary text-white hover:scale-105 active:scale-95 shadow-lg shadow-orange-500/30'
+                  }`}
+                >
+                  {isPending ? <Loader2 className="w-6 h-6 animate-spin" />
+                    : recordingState === 'listening' ? <div className="w-6 h-6 rounded-sm bg-white" />
+                    : <Mic className="w-6 h-6" />}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground animate-in fade-in">{micLabel}</p>
             </div>
-            <p className="text-xs text-muted-foreground animate-in fade-in">{micLabel}</p>
-            <PerplexityAttribution />
+
+            {/* 2. Text Input - Width full */}
+            <div className="w-full flex gap-2 items-center animate-in fade-in slide-in-from-bottom-2 mt-2">
+              <Input 
+                id="text-input"
+                placeholder="Type your message..." 
+                className="flex-1 rounded-full bg-secondary border-transparent focus-visible:bg-background focus-visible:border-primary/50 transition-all h-11 px-5 shadow-sm"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const target = e.target as HTMLInputElement;
+                    handleSendMessage(target.value);
+                    target.value = '';
+                  }
+                }}
+              />
+              <Button size="icon" className="rounded-full shrink-0 h-11 w-11 shadow-sm" onClick={() => {
+                 const input = document.getElementById('text-input') as HTMLInputElement;
+                 if (input && input.value) {
+                    handleSendMessage(input.value);
+                    input.value = '';
+                 }
+              }}>
+                <ChevronRight className="w-5 h-5" />
+              </Button>
+            </div>
+
           </div>
         </div>
       )}
